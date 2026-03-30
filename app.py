@@ -6,23 +6,43 @@ import re
 import json
 from openai import OpenAI
 
-st.write("🚀 App started successfully")
-# =========================.
-# LOAD MODEL
 # =========================
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-model_path = os.path.join(BASE_DIR, "inspection_model.pkl")
-model = joblib.load(model_path)
+# LOAD MODEL (SAFE)
+# =========================
+@st.cache_resource
+def load_model():
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    model_path = os.path.join(BASE_DIR, "inspection_model.pkl")
+    return joblib.load(model_path)
+
+model = load_model()
 
 # =========================
-# OPENAI CLIENT
+# OPENAI CLIENT (SAFE)
 # =========================
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+api_key = st.secrets.get("OPENAI_API_KEY", None)
+
+if api_key:
+    client = OpenAI(api_key=api_key)
+else:
+    client = None
+
+# =========================
+# DOMAIN WORDS (OIL RIG)
+# =========================
+DOMAIN_WORDS = [
+    "crosby", "shackle", "derrick", "swl", "kn", "bolt", "nut",
+    "rig", "hook", "chain", "sling", "drill", "crown", "block",
+    "lifting", "inspection", "load", "pin", "bow", "anchor"
+]
 
 # =========================
 # SPELL CHECK FUNCTION
 # =========================
 def check_spelling(text):
+    if client is None:
+        return text, True, False  # corrected, is_correct, is_gibberish
+
     try:
         response = client.chat.completions.create(
             model="gpt-4o-mini",
@@ -30,26 +50,26 @@ def check_spelling(text):
             messages=[
                 {
                     "role": "system",
-                    "content": """You are a strict spell checker.
+                    "content": f"""
+You are a strict spell checker for oil rig inspection data.
 
-Only fix spelling mistakes in the input text.
+Rules:
+1. Preserve original text exactly except spelling fixes.
+2. Do NOT rephrase.
+3. Do NOT change formatting.
+4. PRIORITIZE oil rig and lifting terms like:
+{", ".join(DOMAIN_WORDS)}
 
-Important:
-- Preserve original capitalization exactly.
-- Preserve spacing and formatting.
-- Do NOT change grammar.
-- Do NOT change wording.
-- Do NOT rephrase anything.
+5. If text contains random/gibberish words with no meaning,
+mark it as gibberish.
 
-If the text is already correct, return it unchanged.
-
-Return ONLY this JSON:
-{
+Return ONLY JSON:
+{{
 "corrected": "corrected text",
-"is_correct": true/false
-}
-
-No explanation."""
+"is_correct": true/false,
+"is_gibberish": true/false
+}}
+"""
                 },
                 {"role": "user", "content": text}
             ]
@@ -58,11 +78,18 @@ No explanation."""
         result = response.choices[0].message.content
         parsed = json.loads(result)
 
-        return parsed["corrected"], parsed["is_correct"]
+        corrected = parsed.get("corrected", text)
+        is_correct = parsed.get("is_correct", False)
+        is_gibberish = parsed.get("is_gibberish", False)
+
+        # Safety check
+        if corrected.strip() != text.strip():
+            is_correct = False
+
+        return corrected, is_correct, is_gibberish
 
     except:
-        # ❗ If anything fails → treat as incorrect to block prediction
-        return text, False
+        return text, False, False
 
 
 # =========================
@@ -70,9 +97,6 @@ No explanation."""
 # =========================
 st.set_page_config(page_title="Inspection Predictor", layout="centered")
 
-# =========================
-# HEADER
-# =========================
 st.markdown("""
 <h1 style='text-align: center; color: #2E86C1;'>🔍 Inspection Status Predictor</h1>
 <p style='text-align: center;'>Enter item details to classify inspection status</p>
@@ -129,12 +153,14 @@ def validate_field(label, text):
     if not use_ai or text.strip() == "":
         return text, True
 
-    corrected, is_correct = check_spelling(text)
+    corrected, is_correct, is_gibberish = check_spelling(text)
 
-    # 🔥 EXTRA SAFETY: detect changes manually
-    if corrected.strip() != text.strip():
-        is_correct = False
+    # 🚨 GIBBERISH
+    if is_gibberish:
+        st.error(f"🚫 {label} contains invalid/gibberish text. No valid words detected.")
+        return text, False
 
+    # 🚨 SPELLING ISSUE
     if not is_correct:
         st.markdown(f"🔴 **{label} has spelling issues**")
         st.markdown(f"👉 Suggested: `{corrected}`")
@@ -158,12 +184,11 @@ if st.button("🚀 Predict Status", use_container_width=True):
 
         all_correct = loc_ok and man_ok and desc_ok
 
-        # ❌ HARD STOP IF SPELLING ISSUES
+        # ❌ STOP IF ISSUES
         if not all_correct:
-            st.error("🚫 Spelling errors detected. Please correct them before prediction.")
+            st.error("🚫 Please fix spelling issues before prediction.")
             st.stop()
 
-        # ✅ CONTINUE ONLY IF CLEAN
         try:
             # PROCESS SWL
             swl_value = process_swl(swl_input)
