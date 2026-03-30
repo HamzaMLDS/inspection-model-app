@@ -12,21 +12,12 @@ st.write("🚀 App started successfully")
 # =========================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 model_path = os.path.join(BASE_DIR, "inspection_model.pkl")
-@st.cache_resource
-def load_model():
-    return joblib.load("inspection_model.pkl")
-
-model = load_model()
+model = joblib.load(model_path)
 
 # =========================
 # OPENAI CLIENT
 # =========================
-api_key = st.secrets.get("OPENAI_API_KEY", None)
-
-if api_key:
-    client = OpenAI(api_key=api_key)
-else:
-    client = None
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # =========================
 # SPELL CHECK FUNCTION
